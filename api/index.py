@@ -13,9 +13,17 @@ app = Flask(__name__)
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 ANYMODEL_API_KEY = os.environ.get("ANYMODEL_API_KEY")
 
-# Реальные переменные, которые создал Vercel + Upstash
 REDIS_URL = os.environ.get("KV_REST_API_URL")
 REDIS_TOKEN = os.environ.get("KV_REST_API_TOKEN")
+
+# Разрешённые Telegram ID
+ALLOWED_CHAT_IDS = {
+    item.strip()
+    for item in os.environ.get(
+        "ALLOWED_CHAT_ID", ""
+    ).split(",")
+    if item.strip()
+}
 
 # =========================================================
 # TELEGRAM
@@ -43,7 +51,7 @@ DEEP_MODEL = "cx/gpt-5.6-terra"
 # =========================================================
 
 MAX_MESSAGES = 100
-CONTEXT_TTL = 2592000  # 30 дней
+CONTEXT_TTL = 2592000
 
 SYSTEM_PROMPT = """
 Ты — постоянный AI-помощник пользователя в Telegram.
@@ -82,6 +90,14 @@ Luna и Terra являются двумя режимами ОДНОГО помо
 
 Отвечай на русском языке, если пользователь не попросил другой язык.
 """
+
+# =========================================================
+# ACCESS CONTROL
+# =========================================================
+
+def is_allowed(chat_id):
+    return str(chat_id) in ALLOWED_CHAT_IDS
+
 
 # =========================================================
 # REDIS
@@ -242,17 +258,20 @@ def send_message(
     }
 
     if inline_keyboard:
+
         payload["reply_markup"] = json.dumps({
             "inline_keyboard": inline_keyboard
         }, ensure_ascii=False)
 
     elif persistent_menu:
+
         payload["reply_markup"] = json.dumps(
             persistent_menu_keyboard(),
             ensure_ascii=False
         )
 
     try:
+
         requests.post(
             SEND_MESSAGE_URL,
             json=payload,
@@ -278,6 +297,7 @@ def answer_callback(callback_id):
         return
 
     try:
+
         requests.post(
             ANSWER_CALLBACK_URL,
             json={
@@ -323,6 +343,7 @@ def set_bot_commands():
     ]
 
     try:
+
         requests.post(
             SET_COMMANDS_URL,
             json={
@@ -557,6 +578,9 @@ def health():
         "anymodel": bool(
             ANYMODEL_API_KEY
         ),
+        "access_control": bool(
+            ALLOWED_CHAT_IDS
+        ),
         "luna": FAST_MODEL,
         "terra": DEEP_MODEL
     })
@@ -577,7 +601,7 @@ def webhook():
     ) or {}
 
     # =====================================================
-    # INLINE BUTTON
+    # CALLBACK BUTTON
     # =====================================================
 
     callback = update.get(
@@ -585,10 +609,6 @@ def webhook():
     )
 
     if callback:
-
-        answer_callback(
-            callback.get("id")
-        )
 
         message = (
             callback.get("message")
@@ -601,10 +621,20 @@ def webhook():
             .get("id")
         )
 
-        if not chat_id:
+        # 🔒 ПРОВЕРКА ДОСТУПА
+        if not chat_id or not is_allowed(chat_id):
+
+            answer_callback(
+                callback.get("id")
+            )
+
             return jsonify({
                 "ok": True
             })
+
+        answer_callback(
+            callback.get("id")
+        )
 
         action = callback.get("data")
 
@@ -612,10 +642,7 @@ def webhook():
             chat_id
         )
 
-        # -----------------------------------------------
         # LUNA
-        # -----------------------------------------------
-
         if action == "mode_luna":
 
             chat_data["mode"] = "luna"
@@ -635,10 +662,7 @@ def webhook():
                 "ok": True
             })
 
-        # -----------------------------------------------
         # TERRA
-        # -----------------------------------------------
-
         if action == "mode_terra":
 
             chat_data["mode"] = "terra"
@@ -658,10 +682,7 @@ def webhook():
                 "ok": True
             })
 
-        # -----------------------------------------------
         # RESET
-        # -----------------------------------------------
-
         if action == "reset_context":
 
             save_chat_data(
@@ -690,7 +711,7 @@ def webhook():
         })
 
     # =====================================================
-    # MESSAGE
+    # NORMAL MESSAGE
     # =====================================================
 
     message = update.get(
@@ -715,16 +736,21 @@ def webhook():
             "ok": True
         })
 
+    # 🔒 ГЛАВНАЯ ПРОВЕРКА ДОСТУПА
+    # Любой чужой Telegram ID здесь заканчивается.
+    if not is_allowed(chat_id):
+
+        return jsonify({
+            "ok": True
+        })
+
     text = (
         message
         .get("text", "")
         .strip()
     )
 
-    # =====================================================
     # START
-    # =====================================================
-
     if text == "/start":
 
         set_bot_commands()
@@ -743,10 +769,7 @@ def webhook():
             "ok": True
         })
 
-    # =====================================================
     # MENU
-    # =====================================================
-
     if text == "☰ Меню" or text == "/menu":
 
         show_menu(
@@ -757,10 +780,7 @@ def webhook():
             "ok": True
         })
 
-    # =====================================================
-    # LUNA COMMAND
-    # =====================================================
-
+    # LUNA
     if text == "/luna":
 
         chat_data = get_chat_data(
@@ -784,10 +804,7 @@ def webhook():
             "ok": True
         })
 
-    # =====================================================
-    # TERRA COMMAND
-    # =====================================================
-
+    # TERRA
     if text == "/terra":
 
         chat_data = get_chat_data(
@@ -811,10 +828,7 @@ def webhook():
             "ok": True
         })
 
-    # =====================================================
-    # RESET COMMAND
-    # =====================================================
-
+    # RESET
     if text == "/reset":
 
         save_chat_data(
@@ -889,45 +903,30 @@ def webhook():
                 "ok": True
             })
 
-    # =====================================================
     # EMPTY
-    # =====================================================
-
     if not text:
 
         return jsonify({
             "ok": True
         })
 
-    # =====================================================
     # LOAD CONTEXT
-    # =====================================================
-
     chat_data = get_chat_data(
         chat_id
     )
 
-    # =====================================================
     # USER MESSAGE
-    # =====================================================
-
     chat_data["messages"].append({
         "role": "user",
         "content": text
     })
 
-    # =====================================================
     # AI
-    # =====================================================
-
     answer = ask_ai(
         chat_data
     )
 
-    # =====================================================
     # SAVE AI ANSWER
-    # =====================================================
-
     chat_data["messages"].append({
         "role": "assistant",
         "content": answer
@@ -938,10 +937,7 @@ def webhook():
         chat_data
     )
 
-    # =====================================================
     # SEND ANSWER
-    # =====================================================
-
     send_message(
         chat_id,
         answer
