@@ -5,72 +5,80 @@ from flask import Flask, request, jsonify
 app = Flask(__name__)
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+ANYMODEL_API_KEY = os.environ.get("ANYMODEL_API_KEY")
 
-TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-
-GEMINI_API_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-2.0-flash:generateContent"
+TELEGRAM_API_URL = (
+    f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 )
 
-def ask_gemini(user_text):
-    headers = {
-        "Content-Type": "application/json"
-    }
+ANYMODEL_API_URL = "https://anymodel.org/v1/chat/completions"
+MODEL = "gpt-5.6-terra"
 
-    params = {
-        "key": GEMINI_API_KEY
+
+def ask_ai(user_text):
+    headers = {
+        "Authorization": f"Bearer {ANYMODEL_API_KEY}",
+        "Content-Type": "application/json",
     }
 
     payload = {
-        "contents": [
+        "model": MODEL,
+        "messages": [
             {
-                "parts": [
-                    {
-                        "text": user_text
-                    }
-                ]
+                "role": "user",
+                "content": user_text,
             }
-        ]
+        ],
     }
 
     try:
         resp = requests.post(
-            GEMINI_API_URL,
+            ANYMODEL_API_URL,
             headers=headers,
-            params=params,
             json=payload,
-            timeout=8,
+            timeout=60,
         )
 
         if not resp.ok:
             return (
-                "GOOGLE ERROR\n\n"
+                "AI ERROR\n\n"
                 f"HTTP: {resp.status_code}\n\n"
                 f"{resp.text}"
             )
 
         data = resp.json()
 
-        return data["candidates"][0]["content"]["parts"][0]["text"]
+        return data["choices"][0]["message"]["content"]
 
     except Exception as e:
-        return str(e)
+        return f"AI CONNECTION ERROR\n\n{e}"
 
 
 def send_telegram_message(chat_id, text):
-    requests.post(
-        TELEGRAM_API_URL,
-        json={
-            "chat_id": chat_id,
-            "text": text
-        },
-        timeout=8,
-    )
+    try:
+        requests.post(
+            TELEGRAM_API_URL,
+            json={
+                "chat_id": chat_id,
+                "text": text,
+            },
+            timeout=15,
+        )
+    except Exception:
+        pass
 
 
-@app.route("/api/index", methods=["POST"])
+@app.route("/", methods=["GET"])
+def home():
+    return "Telegram AI bot is running.", 200
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    return "OK", 200
+
+
+@app.route("/api/index", methods=["GET", "POST"])
 def webhook():
     update = request.get_json(silent=True) or {}
 
@@ -79,23 +87,26 @@ def webhook():
     if not message:
         return jsonify({"ok": True})
 
-    chat_id = message["chat"]["id"]
-    text = message.get("text", "")
+    chat = message.get("chat", {})
+    chat_id = chat.get("id")
 
-    if text == "":
-        send_telegram_message(chat_id, "Отправь текст.")
+    if not chat_id:
         return jsonify({"ok": True})
 
-    answer = ask_gemini(text)
+    text = message.get("text", "").strip()
+
+    if not text:
+        send_telegram_message(
+            chat_id,
+            "Отправь текст."
+        )
+        return jsonify({"ok": True})
+
+    answer = ask_ai(text)
 
     send_telegram_message(chat_id, answer)
 
     return jsonify({"ok": True})
-
-
-@app.route("/api/index", methods=["GET"])
-def health():
-    return "OK", 200
 
 
 if __name__ == "__main__":
