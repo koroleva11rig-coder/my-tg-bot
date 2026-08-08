@@ -5,120 +5,100 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# =========================================================
-# ENVIRONMENT VARIABLES
-# =========================================================
+# ============================================================
+# ENV
+# ============================================================
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 ANYMODEL_API_KEY = os.environ.get("ANYMODEL_API_KEY")
 
-# Vercel + Upstash автоматически создаёт эти переменные
-REDIS_URL = (
-    os.environ.get("UPSTASH_REDIS_REST_URL")
-    or os.environ.get("KV_REST_API_URL")
-)
+REDIS_URL = os.environ.get("UPSTASH_REDIS_REST_URL")
+REDIS_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN")
 
-REDIS_TOKEN = (
-    os.environ.get("UPSTASH_REDIS_REST_TOKEN")
-    or os.environ.get("KV_REST_API_TOKEN")
-)
-
-# Модель для распознавания голосовых.
-# Если в AnyModel у тебя другой доступный ID — меняется только эта строка.
-TRANSCRIBE_MODEL = os.environ.get(
-    "TRANSCRIBE_MODEL",
-    "whisper-1"
-)
-
-# =========================================================
+# ============================================================
 # TELEGRAM
-# =========================================================
+# ============================================================
 
-TELEGRAM_API_BASE = (
+TELEGRAM_BASE = (
     f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 )
 
-TELEGRAM_SEND_URL = (
-    f"{TELEGRAM_API_BASE}/sendMessage"
-)
+TELEGRAM_SEND_URL = f"{TELEGRAM_BASE}/sendMessage"
+TELEGRAM_ANSWER_URL = f"{TELEGRAM_BASE}/answerCallbackQuery"
+TELEGRAM_GET_FILE_URL = f"{TELEGRAM_BASE}/getFile"
 
-TELEGRAM_ANSWER_URL = (
-    f"{TELEGRAM_API_BASE}/answerCallbackQuery"
-)
+# ============================================================
+# ANYMODEL
+# ============================================================
 
-TELEGRAM_FILE_URL = (
-    f"{TELEGRAM_API_BASE}/getFile"
-)
+ANYMODEL_CHAT_URL = "https://anymodel.org/v1/chat/completions"
+ANYMODEL_TRANSCRIBE_URL = "https://anymodel.org/v1/audio/transcriptions"
 
-# =========================================================
-# AI
-# =========================================================
+# ВАЖНО:
+# Это точные ID из твоего каталога AnyModel.
+FAST_MODEL = "cx/gpt-5.6-luna"
+DEEP_MODEL = "cx/gpt-5.6-terra"
 
-ANYMODEL_BASE_URL = "https://anymodel.org/v1"
+# Whisper у тебя сейчас недоступен.
+# Пробуем несколько OpenAI-compatible STT ID.
+TRANSCRIBE_MODELS = [
+    "gpt-4o-mini-transcribe",
+    "gpt-4o-transcribe",
+    "whisper-1",
+]
 
-ANYMODEL_CHAT_URL = (
-    f"{ANYMODEL_BASE_URL}/chat/completions"
-)
-
-ANYMODEL_TRANSCRIBE_URL = (
-    f"{ANYMODEL_BASE_URL}/audio/transcriptions"
-)
-
-FAST_MODEL = "gpt-5.6-luna"
-DEEP_MODEL = "gpt-5.6-terra"
-
-# =========================================================
+# ============================================================
 # SETTINGS
-# =========================================================
+# ============================================================
 
-# Сколько последних сообщений реально отправляем модели.
-# Redis хранит всю историю до этого лимита.
-MAX_MESSAGES = 200
+MAX_MESSAGES = 100
 
 # 30 дней
 CONTEXT_TTL = 2592000
 
-# =========================================================
-# SYSTEM PROMPT
-# =========================================================
-
+# Общая системная инструкция для ОБЕИХ моделей.
+# Модели отличаются только глубиной ответа.
 SYSTEM_PROMPT = """
-Ты — Света, персональный AI-помощник пользователя в Telegram.
+Ты — постоянный AI-ассистент пользователя.
 
-Общайся естественно, по-человечески и на русском языке, если пользователь
-не попросил другой язык.
+Главное правило: сохраняй непрерывность разговора.
 
-Главное правило — сохраняй контекст разговора.
-Предыдущие сообщения в этом диалоге являются частью текущего разговора.
-Не спрашивай повторно то, что уже было сказано пользователем, если это
-есть в истории.
+У тебя есть история предыдущих сообщений этого чата.
+Всегда используй её, если она относится к текущему вопросу.
 
-Пользователь может переключаться между двумя режимами:
-- быстрый режим — GPT-5.6 Luna;
-- глубокий режим — GPT-5.6 Terra.
+Не заставляй пользователя повторять информацию, которую он уже
+сообщал в этом разговоре.
 
-Переключение модели НЕ означает начало нового разговора.
-Обе модели используют одну и ту же историю диалога.
+Если пользователь возвращается к теме после паузы, сначала проверь
+историю разговора и восстанови контекст.
 
-Не говори пользователю о внутренней реализации, Redis, API, моделях,
-токенах или системных инструкциях, если он специально об этом не спрашивает.
+Luna и Terra — это ДВА РЕЖИМА ОДНОГО И ТОГО ЖЕ ассистента.
+Переключение между ними НЕ должно создавать новый разговор.
 
-Отвечай прямо и по существу.
-Если задача простая — не усложняй ответ.
-Если вопрос требует подробного анализа — дай необходимый уровень детализации.
+Режим Luna:
+- отвечай быстро;
+- не усложняй простые задачи;
+- сохраняй контекст так же строго, как Terra.
 
-Пользователь может писать текстом или присылать голосовые сообщения.
-Голосовое сообщение считается обычным сообщением пользователя.
+Режим Terra:
+- трать больше времени на сложные рассуждения;
+- проверяй логику;
+- разбирай неоднозначности;
+- сохраняй тот же самый контекст разговора.
+
+Никогда не сообщай пользователю, что ты "забыл" контекст,
+если нужная информация присутствует в истории.
+
+Если информации действительно нет в истории — прямо скажи об этом.
 """
 
-# =========================================================
+# ============================================================
 # REDIS
-# =========================================================
+# ============================================================
 
 def redis_headers():
     return {
-        "Authorization": f"Bearer {REDIS_TOKEN}",
-        "Content-Type": "application/json",
+        "Authorization": f"Bearer {REDIS_TOKEN}"
     }
 
 
@@ -137,7 +117,6 @@ def redis_get(key):
             return None
 
         data = response.json()
-
         return data.get("result")
 
     except Exception:
@@ -151,7 +130,10 @@ def redis_set(key, value):
     try:
         response = requests.post(
             f"{REDIS_URL}/set/{key}?EX={CONTEXT_TTL}",
-            headers=redis_headers(),
+            headers={
+                **redis_headers(),
+                "Content-Type": "application/json",
+            },
             data=json.dumps(
                 value,
                 ensure_ascii=False
@@ -165,12 +147,9 @@ def redis_set(key, value):
         return False
 
 
-def get_chat_key(chat_id):
-    return f"telegram_chat:{chat_id}"
-
-
 def get_chat_data(chat_id):
-    key = get_chat_key(chat_id)
+
+    key = f"telegram_chat:{chat_id}"
 
     raw = redis_get(key)
 
@@ -186,15 +165,16 @@ def get_chat_data(chat_id):
         if not isinstance(data, dict):
             raise ValueError
 
-        if "mode" not in data:
+        if data.get("mode") not in ("luna", "terra"):
             data["mode"] = "luna"
 
-        if "messages" not in data:
+        if not isinstance(data.get("messages"), list):
             data["messages"] = []
 
         return data
 
     except Exception:
+
         return {
             "mode": "luna",
             "messages": []
@@ -202,53 +182,62 @@ def get_chat_data(chat_id):
 
 
 def save_chat_data(chat_id, data):
-    # Не даём истории разрастаться бесконечно.
+
+    key = f"telegram_chat:{chat_id}"
+
     messages = data.get("messages", [])
 
+    # Оставляем последние 100 сообщений.
     data["messages"] = messages[-MAX_MESSAGES:]
 
-    redis_set(
-        get_chat_key(chat_id),
-        data
-    )
+    redis_set(key, data)
 
-# =========================================================
-# TELEGRAM
-# =========================================================
+
+# ============================================================
+# TELEGRAM HELPERS
+# ============================================================
 
 def send_telegram_message(chat_id, text, keyboard=None):
+
     if not text:
         return
 
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-    }
+    # Telegram ограничивает сообщение примерно 4096 символами.
+    chunks = [
+        text[i:i + 4000]
+        for i in range(0, len(text), 4000)
+    ]
 
-    if keyboard:
-        payload["reply_markup"] = json.dumps(
-            {
+    for chunk in chunks:
+
+        payload = {
+            "chat_id": chat_id,
+            "text": chunk,
+        }
+
+        if keyboard:
+            payload["reply_markup"] = json.dumps({
                 "inline_keyboard": keyboard
-            },
-            ensure_ascii=False
-        )
+            }, ensure_ascii=False)
 
-    try:
-        requests.post(
-            TELEGRAM_SEND_URL,
-            json=payload,
-            timeout=15,
-        )
+        try:
+            requests.post(
+                TELEGRAM_SEND_URL,
+                json=payload,
+                timeout=15,
+            )
 
-    except Exception:
-        pass
+        except Exception:
+            pass
 
 
 def answer_callback(callback_id):
+
     if not callback_id:
         return
 
     try:
+
         requests.post(
             TELEGRAM_ANSWER_URL,
             json={
@@ -261,11 +250,54 @@ def answer_callback(callback_id):
         pass
 
 
-# =========================================================
+# ============================================================
+# TELEGRAM COMMAND MENU
+# ============================================================
+
+def setup_bot_commands():
+
+    if not TELEGRAM_TOKEN:
+        return
+
+    commands = [
+        {
+            "command": "start",
+            "description": "Запустить бота"
+        },
+        {
+            "command": "luna",
+            "description": "⚡ Быстрый режим"
+        },
+        {
+            "command": "terra",
+            "description": "🧠 Глубокий режим"
+        },
+        {
+            "command": "reset",
+            "description": "🗑 Очистить контекст"
+        },
+    ]
+
+    try:
+
+        requests.post(
+            f"{TELEGRAM_BASE}/setMyCommands",
+            json={
+                "commands": commands
+            },
+            timeout=10,
+        )
+
+    except Exception:
+        pass
+
+
+# ============================================================
 # START MENU
-# =========================================================
+# ============================================================
 
 def send_start_menu(chat_id):
+
     keyboard = [
         [
             {
@@ -276,118 +308,25 @@ def send_start_menu(chat_id):
                 "text": "🧠 Подумать глубже",
                 "callback_data": "mode_terra"
             }
+        ],
+        [
+            {
+                "text": "🗑 Очистить контекст",
+                "callback_data": "reset_context"
+            }
         ]
     ]
 
     send_telegram_message(
         chat_id,
-        "Привет 👋\n\nВыбери режим работы:",
+        "Выбери режим:",
         keyboard,
     )
 
 
-# =========================================================
-# VOICE / AUDIO
-# =========================================================
-
-def telegram_get_file(file_id):
-    try:
-        response = requests.get(
-            TELEGRAM_FILE_URL,
-            params={
-                "file_id": file_id
-            },
-            timeout=15,
-        )
-
-        if not response.ok:
-            return None
-
-        data = response.json()
-
-        if not data.get("ok"):
-            return None
-
-        return data.get("result", {}).get("file_path")
-
-    except Exception:
-        return None
-
-
-def download_telegram_file(file_path):
-    try:
-        url = (
-            f"https://api.telegram.org/file/"
-            f"bot{TELEGRAM_TOKEN}/{file_path}"
-        )
-
-        response = requests.get(
-            url,
-            timeout=60,
-        )
-
-        if not response.ok:
-            return None
-
-        return response.content
-
-    except Exception:
-        return None
-
-
-def transcribe_voice(audio_bytes):
-    if not ANYMODEL_API_KEY:
-        return None, "ANYMODEL_API_KEY не настроен."
-
-    try:
-        headers = {
-            "Authorization": f"Bearer {ANYMODEL_API_KEY}"
-        }
-
-        files = {
-            "file": (
-                "voice.ogg",
-                audio_bytes,
-                "audio/ogg"
-            )
-        }
-
-        data = {
-            "model": TRANSCRIBE_MODEL
-        }
-
-        response = requests.post(
-            ANYMODEL_TRANSCRIBE_URL,
-            headers=headers,
-            files=files,
-            data=data,
-            timeout=120,
-        )
-
-        if not response.ok:
-            return (
-                None,
-                f"Ошибка распознавания голоса: "
-                f"HTTP {response.status_code}\n\n"
-                f"{response.text[:1000]}"
-            )
-
-        result = response.json()
-
-        text = result.get("text")
-
-        if not text:
-            return None, "Не удалось получить текст из голосового."
-
-        return text.strip(), None
-
-    except Exception as e:
-        return None, f"Ошибка распознавания голоса:\n\n{e}"
-
-
-# =========================================================
+# ============================================================
 # AI
-# =========================================================
+# ============================================================
 
 def ask_ai(chat_data):
 
@@ -400,10 +339,12 @@ def ask_ai(chat_data):
 
     history = chat_data.get("messages", [])
 
+    # SYSTEM PROMPT добавляется на каждый запрос.
+    # Он НЕ сохраняется как сообщение пользователя.
     messages = [
         {
             "role": "system",
-            "content": SYSTEM_PROMPT.strip()
+            "content": SYSTEM_PROMPT
         }
     ]
 
@@ -420,6 +361,7 @@ def ask_ai(chat_data):
     }
 
     try:
+
         response = requests.post(
             ANYMODEL_CHAT_URL,
             headers=headers,
@@ -428,6 +370,7 @@ def ask_ai(chat_data):
         )
 
         if not response.ok:
+
             return (
                 f"Ошибка AI: HTTP {response.status_code}\n\n"
                 f"{response.text[:2000]}"
@@ -435,63 +378,174 @@ def ask_ai(chat_data):
 
         data = response.json()
 
-        choices = data.get("choices", [])
-
-        if not choices:
-            return "AI не вернул ответ."
-
-        message = choices[0].get("message", {})
-
-        answer = message.get("content")
-
-        if isinstance(answer, list):
-            parts = []
-
-            for item in answer:
-                if isinstance(item, dict):
-                    if item.get("type") == "text":
-                        parts.append(
-                            item.get("text", "")
-                        )
-
-            answer = "\n".join(parts)
-
-        if not answer:
-            return "AI вернул пустой ответ."
-
-        return str(answer).strip()
-
-    except requests.Timeout:
-        return (
-            "Модель слишком долго отвечает. "
-            "Попробуй ещё раз."
+        answer = (
+            data["choices"][0]
+            ["message"]
+            ["content"]
         )
+
+        return answer
 
     except Exception as e:
+
         return (
-            f"Ошибка соединения с AI:\n\n{e}"
+            "Ошибка соединения с AI:\n\n"
+            f"{e}"
         )
 
 
-# =========================================================
+# ============================================================
+# TELEGRAM FILE DOWNLOAD
+# ============================================================
+
+def download_telegram_file(file_id):
+
+    try:
+
+        response = requests.get(
+            f"{TELEGRAM_BASE}/getFile",
+            params={
+                "file_id": file_id
+            },
+            timeout=15,
+        )
+
+        if not response.ok:
+            return None
+
+        data = response.json()
+
+        file_path = (
+            data.get("result", {})
+            .get("file_path")
+        )
+
+        if not file_path:
+            return None
+
+        file_url = (
+            f"https://api.telegram.org/file/"
+            f"bot{TELEGRAM_TOKEN}/{file_path}"
+        )
+
+        audio_response = requests.get(
+            file_url,
+            timeout=30,
+        )
+
+        if not audio_response.ok:
+            return None
+
+        return audio_response.content
+
+    except Exception:
+        return None
+
+
+# ============================================================
+# VOICE TRANSCRIPTION
+# ============================================================
+
+def transcribe_audio(audio_bytes):
+
+    if not audio_bytes:
+        return None
+
+    headers = {
+        "Authorization": f"Bearer {ANYMODEL_API_KEY}",
+    }
+
+    last_error = None
+
+    for model in TRANSCRIBE_MODELS:
+
+        try:
+
+            files = {
+                "file": (
+                    "voice.ogg",
+                    audio_bytes,
+                    "audio/ogg"
+                )
+            }
+
+            data = {
+                "model": model
+            }
+
+            response = requests.post(
+                ANYMODEL_TRANSCRIBE_URL,
+                headers=headers,
+                files=files,
+                data=data,
+                timeout=120,
+            )
+
+            if response.ok:
+
+                result = response.json()
+
+                text = result.get("text")
+
+                if text:
+                    return text.strip()
+
+            last_error = (
+                f"{model}: HTTP "
+                f"{response.status_code}: "
+                f"{response.text[:1000]}"
+            )
+
+        except Exception as e:
+
+            last_error = (
+                f"{model}: {e}"
+            )
+
+    return (
+        "Ошибка распознавания голоса.\n\n"
+        f"{last_error}"
+    )
+
+
+# ============================================================
+# RESET
+# ============================================================
+
+def reset_context(chat_id):
+
+    data = {
+        "mode": "luna",
+        "messages": []
+    }
+
+    save_chat_data(chat_id, data)
+
+
+# ============================================================
 # WEBHOOK
-# =========================================================
+# ============================================================
 
 @app.route("/", methods=["GET"])
 def home():
+
     return "Telegram AI bot is running.", 200
 
 
 @app.route("/health", methods=["GET"])
 def health():
+
     return jsonify({
         "ok": True,
-        "redis": bool(REDIS_URL and REDIS_TOKEN),
-        "telegram": bool(TELEGRAM_TOKEN),
-        "anymodel": bool(ANYMODEL_API_KEY),
-        "fast_model": FAST_MODEL,
-        "deep_model": DEEP_MODEL,
-        "transcribe_model": TRANSCRIBE_MODEL,
+        "redis": bool(
+            REDIS_URL and REDIS_TOKEN
+        ),
+        "telegram": bool(
+            TELEGRAM_TOKEN
+        ),
+        "anymodel": bool(
+            ANYMODEL_API_KEY
+        ),
     }), 200
 
 
@@ -502,39 +556,50 @@ def webhook():
         silent=True
     ) or {}
 
-    # =====================================================
-    # BUTTON PRESS
-    # =====================================================
+    # ========================================================
+    # CALLBACK BUTTON
+    # ========================================================
 
-    callback = update.get("callback_query")
+    callback = update.get(
+        "callback_query"
+    )
 
     if callback:
 
         callback_id = callback.get("id")
 
-        answer_callback(callback_id)
+        answer_callback(
+            callback_id
+        )
 
         data = callback.get("data")
 
-        message = callback.get("message") or {}
-        chat = message.get("chat") or {}
+        message = (
+            callback.get("message")
+            or {}
+        )
+
+        chat = (
+            message.get("chat")
+            or {}
+        )
+
         chat_id = chat.get("id")
 
         if not chat_id:
-            return jsonify({"ok": True})
+            return jsonify({
+                "ok": True
+            })
 
-        chat_data = get_chat_data(chat_id)
+        chat_data = get_chat_data(
+            chat_id
+        )
 
-        # -----------------------------------------------
-        # FAST / LUNA
-        # -----------------------------------------------
-
+        # FAST
         if data == "mode_luna":
 
             chat_data["mode"] = "luna"
 
-            # ВАЖНО:
-            # историю НЕ трогаем.
             save_chat_data(
                 chat_id,
                 chat_data
@@ -542,21 +607,19 @@ def webhook():
 
             send_telegram_message(
                 chat_id,
-                "⚡ Быстрый режим включён."
+                "⚡ Быстрый режим Luna включён.\n\n"
+                "Контекст разговора сохранён."
             )
 
-            return jsonify({"ok": True})
+            return jsonify({
+                "ok": True
+            })
 
-        # -----------------------------------------------
-        # DEEP / TERRA
-        # -----------------------------------------------
-
+        # DEEP
         if data == "mode_terra":
 
             chat_data["mode"] = "terra"
 
-            # ВАЖНО:
-            # историю НЕ трогаем.
             save_chat_data(
                 chat_id,
                 chat_data
@@ -564,31 +627,61 @@ def webhook():
 
             send_telegram_message(
                 chat_id,
-                "🧠 Глубокий режим включён."
+                "🧠 Глубокий режим Terra включён.\n\n"
+                "Контекст разговора сохранён."
             )
 
-            return jsonify({"ok": True})
+            return jsonify({
+                "ok": True
+            })
 
-        return jsonify({"ok": True})
+        # RESET
+        if data == "reset_context":
 
-    # =====================================================
+            reset_context(
+                chat_id
+            )
+
+            send_start_menu(
+                chat_id
+            )
+
+            return jsonify({
+                "ok": True
+            })
+
+        return jsonify({
+            "ok": True
+        })
+
+    # ========================================================
     # NORMAL MESSAGE
-    # =====================================================
+    # ========================================================
 
-    message = update.get("message")
+    message = update.get(
+        "message"
+    )
 
     if not message:
-        return jsonify({"ok": True})
+        return jsonify({
+            "ok": True
+        })
 
-    chat = message.get("chat") or {}
+    chat = (
+        message.get("chat")
+        or {}
+    )
+
     chat_id = chat.get("id")
 
     if not chat_id:
-        return jsonify({"ok": True})
+        return jsonify({
+            "ok": True
+        })
 
-    # =====================================================
-    # /START
-    # =====================================================
+    # ========================================================
+    # COMMANDS
+    # ========================================================
 
     text = (
         message.get("text")
@@ -597,149 +690,199 @@ def webhook():
 
     if text == "/start":
 
-        send_start_menu(chat_id)
+        send_start_menu(
+            chat_id
+        )
 
-        return jsonify({"ok": True})
+        return jsonify({
+            "ok": True
+        })
 
-    # =====================================================
+    if text == "/luna":
+
+        chat_data = get_chat_data(
+            chat_id
+        )
+
+        chat_data["mode"] = "luna"
+
+        save_chat_data(
+            chat_id,
+            chat_data
+        )
+
+        send_telegram_message(
+            chat_id,
+            "⚡ Luna включена.\n\n"
+            "Общий контекст сохранён."
+        )
+
+        return jsonify({
+            "ok": True
+        })
+
+    if text == "/terra":
+
+        chat_data = get_chat_data(
+            chat_id
+        )
+
+        chat_data["mode"] = "terra"
+
+        save_chat_data(
+            chat_id,
+            chat_data
+        )
+
+        send_telegram_message(
+            chat_id,
+            "🧠 Terra включена.\n\n"
+            "Общий контекст сохранён."
+        )
+
+        return jsonify({
+            "ok": True
+        })
+
+    if text == "/reset":
+
+        reset_context(
+            chat_id
+        )
+
+        send_start_menu(
+            chat_id
+        )
+
+        return jsonify({
+            "ok": True
+        })
+
+    # ========================================================
     # VOICE MESSAGE
-    # =====================================================
+    # ========================================================
 
     voice = message.get("voice")
 
     if voice:
 
-        file_id = voice.get("file_id")
+        file_id = voice.get(
+            "file_id"
+        )
 
-        if not file_id:
+        audio = download_telegram_file(
+            file_id
+        )
+
+        if not audio:
+
             send_telegram_message(
                 chat_id,
                 "Не удалось получить голосовое сообщение."
             )
 
-            return jsonify({"ok": True})
+            return jsonify({
+                "ok": True
+            })
 
-        file_path = telegram_get_file(
-            file_id
+        text = transcribe_audio(
+            audio
         )
 
-        if not file_path:
+        if not text:
 
             send_telegram_message(
                 chat_id,
-                "Не удалось получить аудиофайл."
+                "Не удалось распознать голос."
             )
 
-            return jsonify({"ok": True})
+            return jsonify({
+                "ok": True
+            })
 
-        audio_bytes = download_telegram_file(
-            file_path
-        )
-
-        if not audio_bytes:
+        # Если транскрибация вернула нашу ошибку
+        if text.startswith(
+            "Ошибка распознавания голоса."
+        ):
 
             send_telegram_message(
                 chat_id,
-                "Не удалось скачать голосовое сообщение."
+                text
             )
 
-            return jsonify({"ok": True})
+            return jsonify({
+                "ok": True
+            })
 
-        text, error = transcribe_voice(
-            audio_bytes
-        )
-
-        if error:
-
-            send_telegram_message(
-                chat_id,
-                error
-            )
-
-            return jsonify({"ok": True})
-
-        # Теперь голосовое стало обычным
-        # текстовым сообщением и попадает
-        # в тот же самый общий контекст.
-
-    # =====================================================
-    # TEXT MESSAGE
-    # =====================================================
+    # ========================================================
+    # IGNORE EMPTY MESSAGE
+    # ========================================================
 
     if not text:
 
-        return jsonify({"ok": True})
+        return jsonify({
+            "ok": True
+        })
 
-    # =====================================================
-    # LOAD CONTEXT
-    # =====================================================
+    # ========================================================
+    # LOAD SHARED CONTEXT
+    # ========================================================
 
     chat_data = get_chat_data(
         chat_id
     )
 
-    # =====================================================
-    # ADD USER MESSAGE
-    # =====================================================
+    # ========================================================
+    # USER MESSAGE
+    # ========================================================
 
-    chat_data["messages"].append(
-        {
-            "role": "user",
-            "content": text
-        }
-    )
+    chat_data["messages"].append({
+        "role": "user",
+        "content": text
+    })
 
-    # =====================================================
-    # ASK AI
-    # =====================================================
+    # ========================================================
+    # AI
+    # ========================================================
 
     answer = ask_ai(
         chat_data
     )
 
-    # =====================================================
+    # ========================================================
     # SAVE AI ANSWER
-    # =====================================================
+    # ========================================================
 
-    chat_data["messages"].append(
-        {
-            "role": "assistant",
-            "content": answer
-        }
-    )
-
-    # =====================================================
-    # SAVE EVERYTHING TO REDIS
-    # =====================================================
+    chat_data["messages"].append({
+        "role": "assistant",
+        "content": answer
+    })
 
     save_chat_data(
         chat_id,
         chat_data
     )
 
-    # =====================================================
-    # SEND ANSWER
-    # =====================================================
+    # ========================================================
+    # SEND
+    # ========================================================
 
     send_telegram_message(
         chat_id,
         answer
     )
 
-    return jsonify({"ok": True})
+    return jsonify({
+        "ok": True
+    })
 
 
-# =========================================================
+# ============================================================
 # LOCAL
-# =========================================================
+# ============================================================
 
 if __name__ == "__main__":
-    app.run(
-        host="0.0.0.0",
-        port=int(
-            os.environ.get(
-                "PORT",
-                8000
-            )
-        )
-    )
+
+    setup_bot_commands()
+
+    app.run()
