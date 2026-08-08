@@ -1,11 +1,23 @@
 import os
+import json
 import requests
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
+# =========================
+# ENVIRONMENT VARIABLES
+# =========================
+
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 ANYMODEL_API_KEY = os.environ.get("ANYMODEL_API_KEY")
+
+REDIS_URL = os.environ.get("UPSTASH_REDIS_REST_URL")
+REDIS_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN")
+
+# =========================
+# TELEGRAM
+# =========================
 
 TELEGRAM_API_URL = (
     f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -15,32 +27,139 @@ TELEGRAM_ANSWER_URL = (
     f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/answerCallbackQuery"
 )
 
+# =========================
+# AI
+# =========================
+
 ANYMODEL_API_URL = "https://anymodel.org/v1/chat/completions"
 
 FAST_MODEL = "gpt-5.6-luna"
 DEEP_MODEL = "gpt-5.6-terra"
 
-# Режим каждого пользователя
-user_modes = {}
+# =========================
+# SETTINGS
+# =========================
+
+MAX_MESSAGES = 100
+CONTEXT_TTL = 2592000  # 30 дней
 
 
-def send_message(chat_id, text, keyboard=None):
+# =========================
+# REDIS
+# =========================
+
+def redis_headers():
+    return {
+        "Authorization": f"Bearer {REDIS_TOKEN}"
+    }
+
+
+def redis_get(key):
+    if not REDIS_URL or not REDIS_TOKEN:
+        return None
+
+    try:
+        response = requests.get(
+            f"{REDIS_URL}/get/{key}",
+            headers=redis_headers(),
+            timeout=10,
+        )
+
+        if not response.ok:
+            return None
+
+        data = response.json()
+
+        return data.get("result")
+
+    except Exception:
+        return None
+
+
+def redis_set(key, value):
+    if not REDIS_URL or not REDIS_TOKEN:
+        return False
+
+    try:
+        response = requests.post(
+            f"{REDIS_URL}/set/{key}?EX={CONTEXT_TTL}",
+            headers={
+                **redis_headers(),
+                "Content-Type": "application/json",
+            },
+            data=json.dumps(value, ensure_ascii=False),
+            timeout=10,
+        )
+
+        return response.ok
+
+    except Exception:
+        return False
+
+
+def get_chat_data(chat_id):
+    key = f"telegram_chat:{chat_id}"
+
+    raw = redis_get(key)
+
+    if not raw:
+        return {
+            "mode": "luna",
+            "messages": []
+        }
+
+    try:
+        data = json.loads(raw)
+
+        if not isinstance(data, dict):
+            raise ValueError
+
+        if "mode" not in data:
+            data["mode"] = "luna"
+
+        if "messages" not in data:
+            data["messages"] = []
+
+        return data
+
+    except Exception:
+        return {
+            "mode": "luna",
+            "messages": []
+        }
+
+
+def save_chat_data(chat_id, data):
+    key = f"telegram_chat:{chat_id}"
+
+    # Ограничиваем историю, чтобы она не разрасталась бесконечно.
+    data["messages"] = data.get("messages", [])[-MAX_MESSAGES:]
+
+    redis_set(key, data)
+
+
+# =========================
+# TELEGRAM FUNCTIONS
+# =========================
+
+def send_telegram_message(chat_id, text, keyboard=None):
     payload = {
         "chat_id": chat_id,
-        "text": text
+        "text": text,
     }
 
     if keyboard:
-        payload["reply_markup"] = {
+        payload["reply_markup"] = json.dumps({
             "inline_keyboard": keyboard
-        }
+        }, ensure_ascii=False)
 
     try:
         requests.post(
             TELEGRAM_API_URL,
             json=payload,
-            timeout=15
+            timeout=15,
         )
+
     except Exception:
         pass
 
@@ -52,41 +171,61 @@ def answer_callback(callback_id):
             json={
                 "callback_query_id": callback_id
             },
-            timeout=10
+            timeout=10,
         )
+
     except Exception:
         pass
 
 
-def menu():
-    return [
+# =========================
+# START MENU
+# =========================
+
+def send_start_menu(chat_id):
+    keyboard = [
         [
             {
                 "text": "⚡ Быстрый ответ",
-                "callback_data": "fast"
+                "callback_data": "mode_luna"
             },
             {
                 "text": "🧠 Подумать глубже",
-                "callback_data": "deep"
+                "callback_data": "mode_terra"
             }
         ]
     ]
 
+    send_telegram_message(
+        chat_id,
+        "Привет! 👋\n\nВыбери режим:",
+        keyboard,
+    )
 
-def ask_ai(user_text, model):
+
+# =========================
+# AI
+# =========================
+
+def ask_ai(chat_data):
+
+    mode = chat_data.get("mode", "luna")
+
+    if mode == "terra":
+        model = DEEP_MODEL
+    else:
+        model = FAST_MODEL
+
+    messages = chat_data.get("messages", [])
+
     headers = {
         "Authorization": f"Bearer {ANYMODEL_API_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
     }
 
     payload = {
         "model": model,
-        "messages": [
-            {
-                "role": "user",
-                "content": user_text
-            }
-        ]
+        "messages": messages,
     }
 
     try:
@@ -94,25 +233,32 @@ def ask_ai(user_text, model):
             ANYMODEL_API_URL,
             headers=headers,
             json=payload,
-            timeout=60
+            timeout=120,
         )
 
         if not response.ok:
             return (
-                "Не получилось получить ответ. "
-                "Попробуй ещё раз через несколько секунд."
+                f"Ошибка AI: HTTP {response.status_code}\n\n"
+                f"{response.text[:2000]}"
             )
 
         data = response.json()
 
-        return data["choices"][0]["message"]["content"]
-
-    except Exception:
-        return (
-            "Не получилось получить ответ. "
-            "Попробуй ещё раз."
+        answer = (
+            data["choices"][0]
+            ["message"]
+            ["content"]
         )
 
+        return answer
+
+    except Exception as e:
+        return f"Ошибка соединения с AI:\n\n{e}"
+
+
+# =========================
+# WEBHOOK
+# =========================
 
 @app.route("/", methods=["GET"])
 def home():
@@ -121,7 +267,12 @@ def home():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return "OK", 200
+    return jsonify({
+        "ok": True,
+        "redis": bool(REDIS_URL and REDIS_TOKEN),
+        "telegram": bool(TELEGRAM_TOKEN),
+        "anymodel": bool(ANYMODEL_API_KEY),
+    }), 200
 
 
 @app.route("/api/index", methods=["GET", "POST"])
@@ -129,48 +280,67 @@ def webhook():
 
     update = request.get_json(silent=True) or {}
 
-    # Нажатие кнопки
+    # =========================
+    # BUTTON PRESS
+    # =========================
+
     callback = update.get("callback_query")
 
     if callback:
 
         callback_id = callback.get("id")
-        data = callback.get("data")
-
-        message = callback.get("message", {})
-        chat = message.get("chat", {})
-        chat_id = chat.get("id")
 
         answer_callback(callback_id)
 
-        if data == "fast":
-            user_modes[chat_id] = FAST_MODEL
+        data = callback.get("data")
 
-            send_message(
+        message = callback.get("message") or {}
+        chat = message.get("chat") or {}
+        chat_id = chat.get("id")
+
+        if not chat_id:
+            return jsonify({"ok": True})
+
+        chat_data = get_chat_data(chat_id)
+
+        if data == "mode_luna":
+
+            chat_data["mode"] = "luna"
+
+            save_chat_data(chat_id, chat_data)
+
+            send_telegram_message(
                 chat_id,
-                "⚡ Быстрый режим включён.\n\n"
-                "Пиши вопрос."
+                "⚡ Быстрый режим включён.\n\nПиши вопрос."
             )
 
-        elif data == "deep":
-            user_modes[chat_id] = DEEP_MODEL
+            return jsonify({"ok": True})
 
-            send_message(
+        if data == "mode_terra":
+
+            chat_data["mode"] = "terra"
+
+            save_chat_data(chat_id, chat_data)
+
+            send_telegram_message(
                 chat_id,
-                "🧠 Глубокий режим включён.\n\n"
-                "Пиши вопрос."
+                "🧠 Глубокий режим включён.\n\nПиши вопрос."
             )
+
+            return jsonify({"ok": True})
 
         return jsonify({"ok": True})
 
+    # =========================
+    # NORMAL MESSAGE
+    # =========================
 
-    # Обычное сообщение
     message = update.get("message")
 
     if not message:
         return jsonify({"ok": True})
 
-    chat = message.get("chat", {})
+    chat = message.get("chat") or {}
     chat_id = chat.get("id")
 
     if not chat_id:
@@ -181,49 +351,61 @@ def webhook():
     if not text:
         return jsonify({"ok": True})
 
+    # =========================
+    # START
+    # =========================
 
-    # Старт
     if text == "/start":
-
-        user_modes[chat_id] = FAST_MODEL
-
-        send_message(
-            chat_id,
-            "Привет! 👋\n\n"
-            "Выбери режим:",
-            menu()
-        )
-
+        send_start_menu(chat_id)
         return jsonify({"ok": True})
 
+    # =========================
+    # LOAD CONTEXT
+    # =========================
 
-    # Если режим ещё не выбран
-    if chat_id not in user_modes:
+    chat_data = get_chat_data(chat_id)
 
-        user_modes[chat_id] = FAST_MODEL
+    # =========================
+    # ADD USER MESSAGE
+    # =========================
 
-        send_message(
-            chat_id,
-            "Выбери режим:",
-            menu()
-        )
+    chat_data["messages"].append({
+        "role": "user",
+        "content": text
+    })
 
-        return jsonify({"ok": True})
+    # =========================
+    # ASK AI
+    # =========================
 
+    answer = ask_ai(chat_data)
 
-    # Отправляем вопрос в выбранную модель
-    model = user_modes[chat_id]
+    # =========================
+    # SAVE AI ANSWER
+    # =========================
 
-    answer = ask_ai(text, model)
+    chat_data["messages"].append({
+        "role": "assistant",
+        "content": answer
+    })
 
-    send_message(
+    save_chat_data(chat_id, chat_data)
+
+    # =========================
+    # SEND ANSWER
+    # =========================
+
+    send_telegram_message(
         chat_id,
-        answer,
-        menu()
+        answer
     )
 
     return jsonify({"ok": True})
 
+
+# =========================
+# LOCAL
+# =========================
 
 if __name__ == "__main__":
     app.run()
