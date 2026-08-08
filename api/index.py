@@ -7,47 +7,37 @@ app = Flask(__name__)
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 ANYMODEL_API_KEY = os.environ.get("ANYMODEL_API_KEY")
 
-TELEGRAM_API_URL = (
-    f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-)
+TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+TELEGRAM_WEBHOOK_URL = "https://my-tg-bot-tau.vercel.app/api/index"
 
 ANYMODEL_API_URL = "https://anymodel.org/v1/chat/completions"
 MODEL = "gpt-5.6-terra"
 
 
 def ask_ai(user_text):
-    headers = {
-        "Authorization": f"Bearer {ANYMODEL_API_KEY}",
-        "Content-Type": "application/json",
-    }
-
-    payload = {
-        "model": MODEL,
-        "messages": [
-            {
-                "role": "user",
-                "content": user_text,
-            }
-        ],
-    }
-
     try:
         response = requests.post(
             ANYMODEL_API_URL,
-            headers=headers,
-            json=payload,
-            timeout=60,
+            headers={
+                "Authorization": f"Bearer {ANYMODEL_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": MODEL,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": user_text
+                    }
+                ]
+            },
+            timeout=60
         )
 
         if not response.ok:
-            return (
-                "AI ERROR\n\n"
-                f"HTTP: {response.status_code}\n\n"
-                f"{response.text}"
-            )
+            return f"AI ERROR\n\nHTTP {response.status_code}\n\n{response.text}"
 
         data = response.json()
-
         return data["choices"][0]["message"]["content"]
 
     except Exception as e:
@@ -60,9 +50,9 @@ def send_telegram_message(chat_id, text):
             TELEGRAM_API_URL,
             json={
                 "chat_id": chat_id,
-                "text": text,
+                "text": text
             },
-            timeout=15,
+            timeout=15
         )
     except Exception:
         pass
@@ -75,7 +65,19 @@ def home():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return "OK", 200
+    try:
+        response = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook",
+            json={
+                "url": TELEGRAM_WEBHOOK_URL
+            },
+            timeout=15
+        )
+
+        return response.text, response.status_code
+
+    except Exception as e:
+        return str(e), 500
 
 
 @app.route("/api/index", methods=["GET", "POST"])
@@ -87,8 +89,7 @@ def webhook():
     if not message:
         return jsonify({"ok": True})
 
-    chat = message.get("chat", {})
-    chat_id = chat.get("id")
+    chat_id = message.get("chat", {}).get("id")
 
     if not chat_id:
         return jsonify({"ok": True})
@@ -96,14 +97,10 @@ def webhook():
     text = message.get("text", "").strip()
 
     if not text:
-        send_telegram_message(
-            chat_id,
-            "Отправь текст."
-        )
+        send_telegram_message(chat_id, "Отправь текст.")
         return jsonify({"ok": True})
 
     answer = ask_ai(text)
-
     send_telegram_message(chat_id, answer)
 
     return jsonify({"ok": True})
