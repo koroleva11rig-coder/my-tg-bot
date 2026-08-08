@@ -17,7 +17,6 @@ ANYMODEL_API_KEY = os.environ.get("ANYMODEL_API_KEY")
 REDIS_URL = os.environ.get("KV_REST_API_URL")
 REDIS_TOKEN = os.environ.get("KV_REST_API_TOKEN")
 
-# Разрешённые Telegram ID
 ALLOWED_CHAT_IDS = {
     item.strip()
     for item in os.environ.get(
@@ -47,7 +46,7 @@ TRANSCRIBE_URL = "https://anymodel.org/v1/audio/transcriptions"
 FAST_MODEL = "cx/gpt-5.6-luna"
 DEEP_MODEL = "cx/gpt-5.6-terra"
 
-# Модель для фотографий
+# ВИЖН-МОДЕЛЬ
 VISION_MODEL = "ag/gemini-3-flash-agent"
 
 # =========================================================
@@ -55,28 +54,19 @@ VISION_MODEL = "ag/gemini-3-flash-agent"
 # =========================================================
 
 MAX_MESSAGES = 100
-CONTEXT_TTL = 2592000  # 30 дней
+CONTEXT_TTL = 2592000
 
 SYSTEM_PROMPT = """
 Ты — постоянный AI-помощник пользователя в Telegram.
 
 Это один непрерывный разговор.
 
-Ты получаешь историю предыдущих сообщений этого чата.
-Всегда используй эту историю для понимания контекста.
+Всегда используй историю предыдущих сообщений этого чата.
 
-Если пользователь пишет:
-"этот вопрос",
-"а теперь",
-"а что насчёт этого",
-"как ты говорил выше",
-"продолжим",
-"а если",
-или другую фразу, которая зависит от предыдущего разговора,
-используй историю и не проси пользователя повторить уже известную
-информацию.
+Если пользователь ссылается на предыдущие сообщения,
+используй контекст и не проси повторять уже известную информацию.
 
-Есть два режима работы:
+Есть два режима:
 
 Luna — быстрый режим.
 Отвечай быстро, понятно и без лишнего усложнения.
@@ -85,46 +75,43 @@ Terra — глубокий режим.
 Проводить более глубокий анализ, проверять логику и рассматривать
 несколько вариантов, когда это действительно необходимо.
 
-Luna и Terra являются двумя режимами ОДНОГО помощника.
-Переключение между ними никогда не означает новый разговор.
-
-Не говори пользователю о Redis, API, системных инструкциях,
-внутреннем коде или технической реализации, если он специально
-не спрашивает об этом.
+Luna и Terra — это один и тот же помощник.
+Переключение режима не создаёт новый разговор.
 
 Отвечай на русском языке, если пользователь не попросил другой язык.
+
+Не рассказывай пользователю о Redis, API или внутренней реализации,
+если он специально об этом не спрашивает.
 """
 
 VISION_PROMPT = """
-Ты — визуальный AI-помощник пользователя.
+Ты — визуальный AI-помощник.
 
 Пользователь отправил фотографию.
 
-Твоя задача — внимательно проанализировать изображение и ответить
-на вопрос пользователя.
+Внимательно проанализируй изображение.
 
-Если на фотографии растение, дерево, цветок, животное, предмет,
-насекомое, следы повреждения, болезнь растения, продукт или
-другая бытовая вещь — постарайся определить, что именно изображено.
+Если на фото растение, дерево, цветок, животное, насекомое,
+предмет, продукт, повреждение растения или другая бытовая вещь —
+постарайся определить, что изображено.
 
-Если это растение:
+Если это растение или дерево:
 - назови наиболее вероятный вид;
-- объясни, по каким визуальным признакам ты это определил;
-- если возможно, укажи альтернативные варианты;
-- расскажи, что можно сделать дальше;
-- если пользователь спрашивает об уходе, дай практические рекомендации.
+- объясни основные визуальные признаки;
+- укажи альтернативы, если идентификация не абсолютно точная;
+- при необходимости дай рекомендации по уходу.
 
-Не выдумывай точную идентификацию, если фотография недостаточно
-качественная.
+Если фотографии недостаточно для уверенной идентификации,
+честно скажи об этом и укажи, какой дополнительный ракурс
+или крупный план нужен.
 
-Если для уверенной идентификации нужен другой ракурс или крупный
-план — прямо скажи, какую дополнительную фотографию нужно сделать.
+Не выдумывай детали, которых не видно на фотографии.
 
-Отвечай понятно и практически. Пользователь не технический специалист.
+Отвечай понятно и практически.
 """
 
 # =========================================================
-# ACCESS CONTROL
+# ACCESS
 # =========================================================
 
 def is_allowed(chat_id):
@@ -143,6 +130,7 @@ def redis_headers():
 
 
 def redis_get(key):
+
     if not REDIS_URL or not REDIS_TOKEN:
         return None
 
@@ -150,7 +138,7 @@ def redis_get(key):
         response = requests.get(
             f"{REDIS_URL}/get/{key}",
             headers=redis_headers(),
-            timeout=10
+            timeout=8
         )
 
         if not response.ok:
@@ -163,6 +151,7 @@ def redis_get(key):
 
 
 def redis_set(key, value):
+
     if not REDIS_URL or not REDIS_TOKEN:
         return False
 
@@ -174,7 +163,7 @@ def redis_set(key, value):
                 value,
                 ensure_ascii=False
             ),
-            timeout=10
+            timeout=8
         )
 
         return response.ok
@@ -200,6 +189,7 @@ def get_chat_data(chat_id):
         }
 
     try:
+
         data = json.loads(raw)
 
         if not isinstance(data, dict):
@@ -214,6 +204,7 @@ def get_chat_data(chat_id):
         return data
 
     except Exception:
+
         return {
             "mode": "luna",
             "messages": []
@@ -286,7 +277,7 @@ def send_message(
 
     payload = {
         "chat_id": chat_id,
-        "text": text
+        "text": str(text)
     }
 
     if inline_keyboard:
@@ -307,7 +298,7 @@ def send_message(
         requests.post(
             SEND_MESSAGE_URL,
             json=payload,
-            timeout=15
+            timeout=10
         )
 
     except Exception:
@@ -335,7 +326,7 @@ def answer_callback(callback_id):
             json={
                 "callback_query_id": callback_id
             },
-            timeout=10
+            timeout=5
         )
 
     except Exception:
@@ -343,7 +334,7 @@ def answer_callback(callback_id):
 
 
 # =========================================================
-# TELEGRAM COMMANDS
+# COMMANDS
 # =========================================================
 
 def set_bot_commands():
@@ -381,7 +372,7 @@ def set_bot_commands():
             json={
                 "commands": commands
             },
-            timeout=10
+            timeout=8
         )
 
     except Exception:
@@ -437,7 +428,7 @@ def ask_ai(chat_data):
             AI_URL,
             headers=headers,
             json=payload,
-            timeout=180
+            timeout=60
         )
 
         if not response.ok:
@@ -461,6 +452,15 @@ def ask_ai(chat_data):
             .get("content")
         )
 
+        if isinstance(content, list):
+
+            content = "\n".join(
+                str(x.get("text", ""))
+                for x in content
+                if isinstance(x, dict)
+                and x.get("text")
+            )
+
         if not content:
             return "AI вернул пустой ответ."
 
@@ -482,15 +482,82 @@ def ask_ai(chat_data):
 
 
 # =========================================================
-# VISION AI
+# TELEGRAM FILE
 # =========================================================
 
-def ask_vision(chat_data, image_base64, caption=""):
+def download_telegram_file(file_id):
+
+    try:
+
+        response = requests.get(
+            GET_FILE_URL,
+            params={
+                "file_id": file_id
+            },
+            timeout=10
+        )
+
+        if not response.ok:
+            return None, None
+
+        data = response.json()
+
+        file_path = (
+            data
+            .get("result", {})
+            .get("file_path")
+        )
+
+        if not file_path:
+            return None, None
+
+        file_url = (
+            f"https://api.telegram.org/file/"
+            f"bot{TELEGRAM_TOKEN}/{file_path}"
+        )
+
+        file_response = requests.get(
+            file_url,
+            timeout=30
+        )
+
+        if not file_response.ok:
+            return None, None
+
+        # Telegram photos обычно JPEG.
+        # Для документов пытаемся определить формат по расширению.
+        lower_path = file_path.lower()
+
+        if lower_path.endswith(".png"):
+            mime = "image/png"
+        elif lower_path.endswith(".webp"):
+            mime = "image/webp"
+        elif lower_path.endswith(".jpg") or lower_path.endswith(".jpeg"):
+            mime = "image/jpeg"
+        else:
+            mime = "image/jpeg"
+
+        return file_response.content, mime
+
+    except Exception:
+        return None, None
+
+
+# =========================================================
+# VISION
+# =========================================================
+
+def ask_vision(
+    chat_data,
+    image_bytes,
+    mime_type,
+    caption=""
+):
 
     history = chat_data.get(
         "messages",
         []
-    )[-30:]
+    )[-20:]
 
     messages = [
         {
@@ -499,18 +566,36 @@ def ask_vision(chat_data, image_base64, caption=""):
         }
     ]
 
-    # Передаём предыдущий текстовый контекст
-    messages.extend(history)
+    # Только текстовая история.
+    # Старые фотографии повторно не отправляем.
+    for item in history:
 
-    question = caption
+        role = item.get("role")
+        content = item.get("content")
 
-    if not question:
+        if role in ["user", "assistant"]:
+            if isinstance(content, str) and content:
+                messages.append({
+                    "role": role,
+                    "content": content
+                })
+
+    if caption:
+        question = caption
+    else:
         question = (
-            "Проанализируй эту фотографию. "
-            "Что на ней изображено? "
-            "Если это растение, дерево или другое живое "
-            "существо — постарайся определить его."
+            "Что изображено на этой фотографии? "
+            "Проанализируй изображение подробно."
         )
+
+    image_base64 = base64.b64encode(
+        image_bytes
+    ).decode("utf-8")
+
+    image_data_url = (
+        f"data:{mime_type};base64,"
+        f"{image_base64}"
+    )
 
     messages.append({
         "role": "user",
@@ -522,10 +607,7 @@ def ask_vision(chat_data, image_base64, caption=""):
             {
                 "type": "image_url",
                 "image_url": {
-                    "url": (
-                        "data:image/jpeg;base64,"
-                        + image_base64
-                    )
+                    "url": image_data_url
                 }
             }
         ]
@@ -547,7 +629,7 @@ def ask_vision(chat_data, image_base64, caption=""):
             AI_URL,
             headers=headers,
             json=payload,
-            timeout=180
+            timeout=60
         )
 
         if not response.ok:
@@ -555,7 +637,7 @@ def ask_vision(chat_data, image_base64, caption=""):
             return (
                 "Ошибка анализа фотографии: "
                 f"HTTP {response.status_code}\n\n"
-                f"{response.text[:2000]}"
+                f"{response.text[:3000]}"
             )
 
         data = response.json()
@@ -563,23 +645,51 @@ def ask_vision(chat_data, image_base64, caption=""):
         choices = data.get("choices", [])
 
         if not choices:
-            return "Модель не вернула ответ по фотографии."
+            return (
+                "Модель не вернула ответ "
+                "по фотографии."
+            )
 
-        content = (
-            choices[0]
-            .get("message", {})
-            .get("content")
+        message = choices[0].get(
+            "message",
+            {}
         )
 
+        content = message.get(
+            "content"
+        )
+
+        if isinstance(content, list):
+
+            parts = []
+
+            for part in content:
+
+                if isinstance(part, dict):
+
+                    text = part.get("text")
+
+                    if text:
+                        parts.append(
+                            str(text)
+                        )
+
+            content = "\n".join(parts)
+
         if not content:
-            return "Модель не смогла проанализировать фотографию."
+
+            return (
+                "Модель не смогла "
+                "проанализировать фотографию."
+            )
 
         return str(content).strip()
 
     except requests.Timeout:
 
         return (
-            "Анализ фотографии занял слишком много времени. "
+            "Анализ фотографии занял "
+            "слишком много времени. "
             "Попробуй отправить её ещё раз."
         )
 
@@ -589,54 +699,6 @@ def ask_vision(chat_data, image_base64, caption=""):
             "Ошибка анализа фотографии:\n\n"
             + str(e)
         )
-
-
-# =========================================================
-# TELEGRAM FILES
-# =========================================================
-
-def download_telegram_file(file_id):
-
-    try:
-
-        response = requests.get(
-            GET_FILE_URL,
-            params={
-                "file_id": file_id
-            },
-            timeout=15
-        )
-
-        if not response.ok:
-            return None
-
-        data = response.json()
-
-        file_path = (
-            data.get("result", {})
-            .get("file_path")
-        )
-
-        if not file_path:
-            return None
-
-        file_url = (
-            f"https://api.telegram.org/file/"
-            f"bot{TELEGRAM_TOKEN}/{file_path}"
-        )
-
-        audio_or_image = requests.get(
-            file_url,
-            timeout=60
-        )
-
-        if not audio_or_image.ok:
-            return None
-
-        return audio_or_image.content
-
-    except Exception:
-        return None
 
 
 # =========================================================
@@ -673,7 +735,7 @@ def transcribe_voice(audio_bytes):
                 data={
                     "model": model
                 },
-                timeout=120
+                timeout=45
             )
 
             if response.ok:
@@ -730,7 +792,7 @@ def health():
         "luna": FAST_MODEL,
         "terra": DEEP_MODEL,
         "vision": VISION_MODEL
-    })
+    }), 200
 
 
 # =========================================================
@@ -748,7 +810,7 @@ def webhook():
     ) or {}
 
     # =====================================================
-    # CALLBACK BUTTON
+    # CALLBACK
     # =====================================================
 
     callback = update.get(
@@ -768,25 +830,23 @@ def webhook():
             .get("id")
         )
 
-        if not chat_id or not is_allowed(chat_id):
+        answer_callback(
+            callback.get("id")
+        )
 
-            answer_callback(
-                callback.get("id")
-            )
+        if not chat_id or not is_allowed(chat_id):
 
             return jsonify({
                 "ok": True
             })
-
-        answer_callback(
-            callback.get("id")
-        )
 
         action = callback.get("data")
 
         chat_data = get_chat_data(
             chat_id
         )
+
+        # ---------------- LUNA ----------------
 
         if action == "mode_luna":
 
@@ -807,6 +867,8 @@ def webhook():
                 "ok": True
             })
 
+        # ---------------- TERRA ----------------
+
         if action == "mode_terra":
 
             chat_data["mode"] = "terra"
@@ -825,6 +887,8 @@ def webhook():
             return jsonify({
                 "ok": True
             })
+
+        # ---------------- RESET ----------------
 
         if action == "reset_context":
 
@@ -890,7 +954,7 @@ def webhook():
         })
 
     # =====================================================
-    # START
+    # TEXT
     # =====================================================
 
     text = (
@@ -898,6 +962,10 @@ def webhook():
         .get("text", "")
         .strip()
     )
+
+    # =====================================================
+    # START
+    # =====================================================
 
     if text == "/start":
 
@@ -921,7 +989,10 @@ def webhook():
     # MENU
     # =====================================================
 
-    if text == "☰ Меню" or text == "/menu":
+    if (
+        text == "☰ Меню"
+        or text == "/menu"
+    ):
 
         show_menu(
             chat_id
@@ -1018,8 +1089,11 @@ def webhook():
 
         try:
 
+            # Берём самое большое доступное фото
+            largest_photo = photo[-1]
+
             photo_file_id = (
-                photo[-1]
+                largest_photo
                 .get("file_id")
             )
 
@@ -1034,8 +1108,10 @@ def webhook():
                     "ok": True
                 })
 
-            image_bytes = download_telegram_file(
-                photo_file_id
+            image_bytes, mime_type = (
+                download_telegram_file(
+                    photo_file_id
+                )
             )
 
             if not image_bytes:
@@ -1049,13 +1125,10 @@ def webhook():
                     "ok": True
                 })
 
-            image_base64 = base64.b64encode(
-                image_bytes
-            ).decode("utf-8")
-
             caption = (
                 message
-                .get("caption") or ""
+                .get("caption")
+                or ""
             ).strip()
 
             chat_data = get_chat_data(
@@ -1064,10 +1137,13 @@ def webhook():
 
             answer = ask_vision(
                 chat_data,
-                image_base64,
+                image_bytes,
+                mime_type,
                 caption
             )
 
+            # Сохраняем вопрос/описание фотографии
+            # в общий контекст.
             context_text = (
                 caption
                 if caption
@@ -1133,7 +1209,7 @@ def webhook():
                 "ok": True
             })
 
-        audio = download_telegram_file(
+        audio, _ = download_telegram_file(
             file_id
         )
 
@@ -1188,9 +1264,17 @@ def webhook():
         "content": text
     })
 
+    # =====================================================
+    # AI
+    # =====================================================
+
     answer = ask_ai(
         chat_data
     )
+
+    # =====================================================
+    # SAVE
+    # =====================================================
 
     chat_data["messages"].append({
         "role": "assistant",
@@ -1201,6 +1285,10 @@ def webhook():
         chat_id,
         chat_data
     )
+
+    # =====================================================
+    # SEND
+    # =====================================================
 
     send_message(
         chat_id,
@@ -1220,4 +1308,12 @@ if __name__ == "__main__":
 
     set_bot_commands()
 
-    app.run()
+    app.run(
+        host="0.0.0.0",
+        port=int(
+            os.environ.get(
+                "PORT",
+                5000
+            )
+        )
+    )
